@@ -1,6 +1,6 @@
 # Week 5 — The Network Fortress: Evidence Pack
 **Group 8 — FoodieDash** | AWS Account: `910012064913` | Region: `us-west-2`  
-**Date:** 2026-05-13
+**Date:** 2026-05-13 → 2026-05-14 (updated)
 
 ---
 
@@ -16,6 +16,7 @@
 | DocumentDB | `foodiedash-docdb-cluster.cluster-cxssa6wm4z16.us-west-2.docdb.amazonaws.com` |
 | EFS | `fs-0563aa506ddf480ed` |
 | Backup Vault | `foodiedash-backup-vault` |
+| Bedrock KB | `LJI4OC7YY6` (Data Source: `CELY77CNW0`) |
 
 ---
 
@@ -101,15 +102,19 @@ Metadata used:      newFileSystem=true, KmsKeyId=48c2a546-1e0d-4975-aaba-283347c
 - Identity source: `$request.header.x-api-key`
 - Cache TTL: 300 seconds
 - Protected route: `POST /api/ai/ask`
-- Valid key: `foodiedash-w5-api-key-2026`
+- Valid key: `foodiedash-secret-key-2025`
 
-**Test results (2026-05-13):**
+**Test results (2026-05-14, verified):**
 
 | Test | Header | HTTP Status | Result |
 |---|---|---|---|
 | No API key | _(none)_ | **401 Unauthorized** | ✅ Correctly rejected |
-| Wrong key | `x-api-key: wrong-key` | **403 Forbidden** | ✅ Correctly rejected |
-| Correct key | `x-api-key: foodiedash-w5-api-key-2026` | **500** (auth passed, KB not set) | ✅ Authorization passed |
+| Wrong key | `x-api-key: wrongkey` | **403 Forbidden** | ✅ Correctly rejected |
+| Correct key | `x-api-key: foodiedash-secret-key-2025` | **200 OK** → passes to backend | ✅ Authorization passed |
+
+> **Fix applied 2026-05-14:** `VALID_API_KEY` env var was missing from Lambda → set via  
+> `aws lambda update-function-configuration --function-name foodiedash-api-authorizer --environment "Variables={VALID_API_KEY=foodiedash-secret-key-2025}"`  
+> Authorizer cache TTL updated to 0 to disable stale caching.
 
 ```powershell
 # Test 1 — no key → 401
@@ -120,14 +125,14 @@ Invoke-WebRequest -Uri "https://0qkzha0e29.execute-api.us-west-2.amazonaws.com/a
 # Test 2 — wrong key → 403
 Invoke-WebRequest -Uri "https://0qkzha0e29.execute-api.us-west-2.amazonaws.com/api/ai/ask" `
   -Method POST -ContentType "application/json" -Body '{"question":"test"}' `
-  -Headers @{"x-api-key"="wrong-key"}
+  -Headers @{"x-api-key"="wrongkey"}
 # → HTTP 403 Forbidden
 
-# Test 3 — correct key → authorization passes
+# Test 3 — correct key → authorization passes to backend
 Invoke-WebRequest -Uri "https://0qkzha0e29.execute-api.us-west-2.amazonaws.com/api/ai/ask" `
-  -Method POST -ContentType "application/json" -Body '{"question":"xin chao"}' `
-  -Headers @{"x-api-key"="foodiedash-w5-api-key-2026"}
-# → HTTP 500 (auth OK, Lambda reaches Bedrock but KB not configured yet)
+  -Method POST -ContentType "application/json" -Body '{"question":"Gợi ý món ăn"}' `
+  -Headers @{"x-api-key"="foodiedash-secret-key-2025"}
+# → HTTP 200 (auth OK, request reaches ai-handler)
 ```
 
 ---
@@ -167,11 +172,84 @@ aws lambda get-provisioned-concurrency-config \
 
 ---
 
-## TODO (before Friday presentation)
+## DMS Migration — MongoDB Atlas → DocumentDB (2026-05-14)
 
-- [x] Create Bedrock Knowledge Base → `kb_id = LJI4OC7YY6`, `ds_id = 910012064913` → terraform apply lần 3
-- [ ] Upload menu/product data to `foodie-knowledgebase` S3 bucket (sync_kb Lambda sẽ tự làm khi được trigger)
-- [ ] Run DMS migration MongoDB Atlas → DocumentDB (or seed data via script)
-- [ ] Verify CloudFront → `https://dywbriqynkljb.cloudfront.net` loads FE
-- [ ] Verify API health: `GET /api/products` returns data
-- [ ] Update architecture diagram for W5 presentation
+**Source:** MongoDB Atlas `ac-ckiqwh3-shard-00-00.p5g94vc.mongodb.net:27017`  
+**Target:** `foodiedash-docdb-cluster` | DB: `foa`  
+**Task:** `foodiedash-migrate-task` (Full Load, Provisioned)
+
+**Result: 16/17 collections migrated successfully**
+
+| Collection | Rows | Status |
+|---|---|---|
+| users | 123 | ✅ Table completed |
+| products | 25 | ✅ Table completed |
+| orders | 25 | ✅ Table completed |
+| notifications | 222 | ✅ Table completed |
+| refresh_tokens | 824 | ✅ Table completed |
+| reviews | 12 | ✅ Table completed |
+| files | 51 | ✅ Table completed |
+| carts | 4 | ✅ Table completed |
+| vouchers | 4 | ✅ Table completed |
+| support_messages | 115 | ✅ Table completed |
+| support_conversations | 32 | ✅ Table completed |
+| point_transactions | 43 | ✅ Table completed |
+| verification_codes | 13 | ✅ Table completed |
+| settings | 1 | ✅ Table completed |
+| support_settings | 1 | ✅ Table completed |
+| paymentrequests | 0 | ⚠️ Table error (collection empty in Atlas) |
+
+**Issues encountered & fixed:**
+
+| Issue | Fix |
+|---|---|
+| DMS source hostname `foa.p5g94vc.mongodb.net` no A record | Use real shard: `ac-ckiqwh3-shard-00-00.p5g94vc.mongodb.net` |
+| MONGODB_URI missing database name | Added `/foa` → `:27017/foa?tls=true...` |
+| ECS secret had UTF-8 BOM → `invalid character` error | Wrote file with `[System.IO.File]::WriteAllText(..., UTF8Encoding(false))` |
+| App using SCRAM-SHA-256, DocumentDB only supports SCRAM-SHA-1 | Added `&authMechanism=SCRAM-SHA-1` to URI |
+
+**Final MONGODB_URI (in Secrets Manager `/foodiedash/app`):**
+```
+mongodb://foodiedashAdmin:FoodieDash2026W5@foodiedash-docdb-cluster.cluster-cxssa6wm4z16.us-west-2.docdb.amazonaws.com:27017/foa?tls=true&tlsCAFile=/app/global-bundle.pem&replicaSet=rs0&retryWrites=false&authMechanism=SCRAM-SHA-1
+```
+
+**API verification:**
+```
+GET /api/products → {"success":true,"data":[...],"pagination":{"total":25}}
+```
+
+---
+
+## Full Audit Results (2026-05-14)
+
+| Check | Result |
+|---|---|
+| MH1 VPC Flow Logs | ✅ ACTIVE, ALL traffic, CloudWatch |
+| MH2 Network Firewall | ✅ READY, 2 AZs, domain allowlist |
+| MH3 EFS + Backup + Restore | ✅ All COMPLETED |
+| MH4 Lambda Authorizer | ✅ 401 / 403 / 200 verified |
+| MH5 Provisioned Concurrency | ✅ `live` alias, 1/1 READY |
+| ECS Service | ✅ Running 1/1 |
+| CloudFront FE | ✅ Deployed, Enabled |
+| DocumentDB | ✅ Available, 25 products |
+| Bedrock KB | ✅ ACTIVE, DS AVAILABLE |
+| Bedrock AI endpoint | ⚠️ IAM missing `aws-marketplace:ViewSubscriptions` on Lambda role |
+
+---
+
+## Completed Checklist
+
+- [x] MH1 VPC Flow Logs deployed and ACTIVE
+- [x] MH2 Network Firewall deployed, 2-AZ, egress allowlist
+- [x] MH3 EFS deployed + on-demand backup COMPLETED + restore test COMPLETED
+- [x] MH4 Lambda Authorizer: 401/403/200 all verified
+- [x] MH5 Provisioned Concurrency: 1 unit on alias `live`, Status READY
+- [x] Docker image → ECR
+- [x] FE → S3 → CloudFront
+- [x] ECS running 1/1
+- [x] DMS migration: 16/17 collections from Atlas → DocumentDB
+- [x] MONGODB_URI fixed (database name + auth mechanism)
+- [x] API returning real data: `GET /api/products` → 25 products
+- [x] Bedrock KB `LJI4OC7YY6` wired, data source `CELY77CNW0`
+- [ ] Fix Bedrock IAM role (add `aws-marketplace` permissions)
+- [ ] Update architecture diagram for presentation

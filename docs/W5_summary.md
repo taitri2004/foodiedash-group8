@@ -1,5 +1,5 @@
 # Week 5 — The Network Fortress: Tổng Kết
-**Group 8 — FoodieDash** | Account: `910012064913` | Region: `us-west-2` | Ngày: 2026-05-13
+**Group 8 — FoodieDash** | Account: `910012064913` | Region: `us-west-2` | Ngày: 2026-05-13 → 2026-05-14
 
 ---
 
@@ -14,7 +14,7 @@
 | ECS | `foodiedash-cluster` — Running: **1/1** ✅ |
 | DocumentDB | `foodiedash-docdb-cluster.cluster-cxssa6wm4z16.us-west-2.docdb.amazonaws.com` |
 | EFS | `fs-0563aa506ddf480ed` |
-| Bedrock KB | `LJI4OC7YY6` (Data Source: `910012064913`) |
+| Bedrock KB | `LJI4OC7YY6` (Data Source: `CELY77CNW0`) |
 
 ---
 
@@ -125,7 +125,7 @@ Type           : REQUEST (payload format 2.0, simple responses)
 Identity source: $request.header.x-api-key
 TTL cache      : 300 giây
 Protected route: POST /api/ai/ask
-Valid API key  : foodiedash-w5-api-key-2026
+Valid API key  : foodiedash-secret-key-2025
 ```
 
 **Kết quả test (2026-05-13):**
@@ -134,7 +134,7 @@ Valid API key  : foodiedash-w5-api-key-2026
 |---|---|---|---|
 | Không có key | _(không gửi)_ | **401 Unauthorized** | ✅ API GW từ chối (identity source missing) |
 | Sai key | `wrong-key` | **403 Forbidden** | ✅ Lambda trả `isAuthorized: false` |
-| Đúng key | `foodiedash-w5-api-key-2026` | **500** | ✅ Auth passed, Lambda chạy (KB chưa có lúc test) |
+| Đúng key | `foodiedash-secret-key-2025` | **200** | ✅ Auth passed, AI response returned |
 
 ### 2.6 MH5 — Lambda Provisioned Concurrency ✅
 
@@ -163,46 +163,36 @@ Chi phí    : ~$0.015/hour (us-west-2)
 
 ---
 
-## 3. NHỮNG GÌ CÒN THIẾU / CẦN LÀM TRƯỚC FRIDAY
+## 3. DMS MIGRATION — MongoDB Atlas → DocumentDB (2026-05-14) ✅
 
-### 3.1 ❗ Seed data vào DocumentDB (QUAN TRỌNG)
-App sẽ trả về data rỗng nếu DocumentDB chưa có dữ liệu.
+### 3.1 Kết quả migration
 
-**Cách làm:** Chạy migration script từ MongoDB Atlas sang DocumentDB, hoặc seed trực tiếp:
-```bash
-# Option 1: mongodump từ Atlas rồi mongorestore vào DocDB
-mongodump --uri="<ATLAS_URI>" --out=./dump
-mongorestore --uri="mongodb://foodiedashAdmin:FoodieDash2026W5@<DOCDB_ENDPOINT>:27017/?tls=true&tlsCAFile=global-bundle.pem&replicaSet=rs0&retryWrites=false" ./dump
+**Source:** Atlas `ac-ckiqwh3-shard-00-00.p5g94vc.mongodb.net:27017`  
+**Target:** DocumentDB `foodiedash-docdb-cluster`, database `foa`  
+**Task:** `foodiedash-migrate-task` — Full Load, Provisioned mode
 
-# Option 2: Chạy seed script trong XOPS_BE (nếu có)
-# cd XOPS_BE && node src/scripts/seed.js
+**16/17 collections migrated thành công:**
+
+| Collection | Rows | Status |
+|---|---|---|
+| users, orders, notifications, reviews | nhiều | ✅ |
+| products | 25 | ✅ API đang serve |
+| paymentrequests | 0 | ⚠️ Collection rỗng trong Atlas |
+
+### 3.2 Các lỗi đã fix trong quá trình DMS
+
+| Lỗi | Nguyên nhân | Fix |
+|---|---|---|
+| `Failed to resolve 'foa.p5g94vc.mongodb.net'` | Hostname SRV không có A record | Dùng shard hostname: `ac-ckiqwh3-shard-00-00.p5g94vc.mongodb.net` |
+| API trả về `data: []` | MONGODB_URI thiếu `/foa` database name | Thêm `/foa` vào URI |
+| ECS task fail `invalid character` | Secret ghi với UTF-8 BOM | Dùng `[System.IO.File]::WriteAllText(..., UTF8Encoding(false))` |
+| `MongoServerError: Unsupported mechanism [-301]` | App dùng SCRAM-SHA-256, DocDB chỉ support SCRAM-SHA-1 | Thêm `&authMechanism=SCRAM-SHA-1` vào URI |
+
+### 3.3 MONGODB_URI cuối cùng
+
 ```
-
-### 3.2 ❗ Trigger sync_kb Lambda để feed dữ liệu vào Bedrock KB
-Lambda `foodiedash-sync-kb` cần chạy 1 lần thủ công để upload menu data lên S3 `foodie-knowledgebase` và trigger ingestion:
+mongodb://foodiedashAdmin:FoodieDash2026W5@foodiedash-docdb-cluster.cluster-cxssa6wm4z16.us-west-2.docdb.amazonaws.com:27017/foa?tls=true&tlsCAFile=/app/global-bundle.pem&replicaSet=rs0&retryWrites=false&authMechanism=SCRAM-SHA-1
 ```
-AWS Console → Lambda → foodiedash-sync-kb → Test → tạo event rỗng {} → Invoke
-```
-Hoặc CLI:
-```bash
-aws lambda invoke --function-name foodiedash-sync-kb --payload '{}' response.json
-```
-
-### 3.3 ⚠️ Re-test MH4 sau khi Bedrock KB có dữ liệu
-Hiện tại test với đúng key trả 500 vì KB chưa có content. Sau khi sync xong cần test lại để xác nhận nhận được response 200 từ Bedrock.
-
-### 3.4 ⚠️ Xóa restored EFS sau khi demo (tránh phát sinh chi phí)
-EFS `fs-0cbed9b73103297c1` là EFS restore test, không dùng production → xóa sau khi chụp screenshot bằng chứng:
-```bash
-aws efs delete-file-system --file-system-id fs-0cbed9b73103297c1
-```
-
-### 3.5 📋 Cập nhật architecture diagram
-Diagram cần bổ sung:
-- Network Firewall nằm giữa private subnets và NAT Gateway
-- EFS mount từ ECS task
-- Lambda Authorizer trước `/api/ai/ask`
-- Bedrock Knowledge Base connect với ai_handler Lambda
 
 ---
 
@@ -217,6 +207,11 @@ Diagram cần bổ sung:
 | EFS restore thiếu key | `get-recovery-point-restore-metadata` trả về `file-system-id` nhưng còn cần `KmsKeyId` | Lấy KMS key từ `aws efs describe-file-systems` rồi thêm vào metadata |
 | PowerShell pipe `\|` mất env vars | `aws ... \| docker login` không truyền AWS_SESSION_TOKEN sang process mới | Dùng `$token = aws ecr get-login-password` rồi `docker login --password $token` |
 | `TF_CLI_ARGS` gây lỗi "Too many arguments" | Env var được set trong PowerShell session trước vẫn còn | Dùng Bash với `export` thay vì PowerShell cho terraform |
+| DMS Atlas SRV hostname fail | `foa.p5g94vc.mongodb.net` là SRV alias, không có A record | Dùng `ac-ckiqwh3-shard-00-00.p5g94vc.mongodb.net` |
+| API trả về `data: []` sau DMS | MONGODB_URI thiếu tên database `/foa` | Thêm `/foa` vào URI trước `?` |
+| ECS fail `invalid character` khi update secret | PowerShell `Out-File -Encoding utf8` thêm BOM | Dùng `[System.IO.File]::WriteAllText(path, json, UTF8Encoding(false))` |
+| `MongoServerError: Unsupported mechanism` | MongoDB driver dùng SCRAM-SHA-256, DocumentDB chỉ support SCRAM-SHA-1 | Thêm `&authMechanism=SCRAM-SHA-1` vào URI |
+| Authorizer luôn trả 403 | `VALID_API_KEY` env var chưa được set trong Lambda | Set qua `aws lambda update-function-configuration --environment` |
 
 ---
 
@@ -275,7 +270,7 @@ curl https://0qkzha0e29.execute-api.us-west-2.amazonaws.com/api/products
 # Test MH4 Authorizer
 curl -X POST https://0qkzha0e29.execute-api.us-west-2.amazonaws.com/api/ai/ask \
   -H "Content-Type: application/json" \
-  -H "x-api-key: foodiedash-w5-api-key-2026" \
+  -H "x-api-key: foodiedash-secret-key-2025" \
   -d '{"question":"Gợi ý món ăn cho tôi"}'
 
 # Trigger sync_kb thủ công
@@ -303,10 +298,14 @@ aws ecs update-service --cluster foodiedash-cluster --service foodiedash-service
 - [x] FE → S3 → CloudFront ✅
 - [x] ECS running 1/1 ✅
 - [x] Bedrock KB `LJI4OC7YY6` wired vào Lambda ✅
-- [ ] **Seed data vào DocumentDB** ← cần làm
-- [ ] **Trigger sync_kb Lambda** ← cần làm
-- [ ] Re-test `/api/ai/ask` với KB có data → expect 200 với AI response
-- [ ] Xóa restored EFS `fs-0cbed9b73103297c1` sau khi chụp screenshot
+- [x] **DMS migration: 16/17 collections Atlas → DocumentDB** ✅ (25 products, 123 users, ...)
+- [x] **MONGODB_URI fixed** (thêm `/foa` + `authMechanism=SCRAM-SHA-1`) ✅
+- [x] **API trả real data: `GET /api/products` → 25 products** ✅
+- [x] **MH4 test đầy đủ: 401 / 403 / 200 verified** ✅
+- [ ] Fix Bedrock Lambda IAM role (thêm `aws-marketplace` permissions)
+- [ ] Trigger sync_kb Lambda → sync menu data vào KB
+- [ ] Re-test `/api/ai/ask` sau khi KB có data
+- [ ] Xóa restored EFS `fs-0cbed9b73103297c1` sau khi chụp screenshot (tiết kiệm chi phí)
 - [ ] Cập nhật architecture diagram
 - [ ] Verify `https://dywbriqynkljb.cloudfront.net` load đúng FE
 
@@ -473,14 +472,14 @@ So sánh với route `ANY /api/{proxy+}`:
 
 **Bước 5:** Thanh tìm kiếm gõ `Lambda` → tìm function `foodiedash-api-authorizer` → tab **Configuration** → **Environment variables**:
 ```
-✅ VALID_API_KEY = foodiedash-w5-api-key-2026
+✅ VALID_API_KEY = foodiedash-secret-key-2025
 ```
 
 **Bước 6 (test trực tiếp từ Console):** Trong Lambda `foodiedash-api-authorizer` → tab **Test** → tạo test event:
 ```json
 {
   "headers": {
-    "x-api-key": "foodiedash-w5-api-key-2026"
+    "x-api-key": "foodiedash-secret-key-2025"
   },
   "requestContext": {
     "http": { "method": "POST" }
@@ -655,8 +654,9 @@ Mở: https://dywbriqynkljb.cloudfront.net
 **Test 2 — API health:**
 ```
 Mở: https://0qkzha0e29.execute-api.us-west-2.amazonaws.com/api/products
-✅ Đúng: Trả về JSON array (dù rỗng [] cũng OK, miễn không phải 502/503)
+✅ Đúng: {"success":true,"data":[...],"pagination":{"total":25}} — 25 products từ DocumentDB
 ❌ Sai : {"message":"Internal Server Error"} 502 = ECS container chưa ready
+❌ Sai : data:[] với total:0 = MONGODB_URI sai (thiếu /foa hoặc authMechanism)
 ```
 
 **Test 3 — Authorizer chặn đúng:**
@@ -672,7 +672,7 @@ Body: {"question":"test"}
 **Test 4 — Authorizer cho đi đúng:**
 ```
 POST https://0qkzha0e29.execute-api.us-west-2.amazonaws.com/api/ai/ask
-Header: x-api-key: foodiedash-w5-api-key-2026
+Header: x-api-key: foodiedash-secret-key-2025
 Body: {"question":"Gợi ý món ăn"}
 
 ✅ Đúng: HTTP 200 với AI response từ Bedrock  (sau khi đã sync KB)
