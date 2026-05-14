@@ -1,0 +1,33 @@
+account_id = "YOUR_AWS_ACCOUNT_ID"
+aws_region = "us-west-2"
+
+# DocumentDB master password
+docdb_master_password = "YourSecurePassword123"
+
+# CloudFront domain — fill in after first deploy
+cloudfront_domain = "XXXXXXXXXXXX.cloudfront.net"
+
+# Bedrock Knowledge Base — fill in after creating KB manually on console
+kb_id = "YOUR_KB_ID"
+ds_id = "YOUR_DS_ID"
+
+# App secrets — fill in your real credentials
+app_secrets = {
+  PORT                    = "4000"
+  NODE_ENV                = "production"
+  MONGODB_URI             = "mongodb://USER:PASS@your-docdb-cluster.cluster-XXXXXXXX.us-west-2.docdb.amazonaws.com:27017/?tls=true&tlsCAFile=/app/global-bundle.pem&replicaSet=rs0&retryWrites=false"
+  AUTH_JWT_SECRET         = "your-jwt-secret-min-64-chars"
+  AUTH_JWT_REFRESH_SECRET = "your-jwt-refresh-secret-min-64-chars"
+  CLOUDINARY_CLOUD_NAME   = "your-cloudinary-cloud-name"
+  CLOUDINARY_API_KEY      = "your-cloudinary-api-key"
+  CLOUDINARY_API_SECRET   = "your-cloudinary-api-secret"
+  GEMINI_API_KEY          = "your-gemini-api-key"
+  GROQ_API_KEY            = "your-groq-api-key"
+  APP_ORIGIN              = "https://XXXXXXXXXXXX.cloudfront.net"
+  PAYOS_CLIENT_ID         = "your-payos-client-id"
+  PAYOS_API_KEY           = "your-payos-api-key"
+  PAYOS_CHECKSUM_KEY      = "your-payos-checksum-key"
+  S3_BUCKET_MEDIA         = "your-s3-media-bucket-name"
+  GOOGLE_APP_USER         = "your-email@example.com"
+  GOOGLE_APP_PASSWORD     = "your-google-app-password"
+}
