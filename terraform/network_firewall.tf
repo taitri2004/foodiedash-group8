@@ -25,6 +25,10 @@ resource "aws_networkfirewall_rule_group" "egress_allowlist" {
   capacity = 100
 
   rule_group {
+    stateful_rule_options {
+      rule_order = "STRICT_ORDER"
+    }
+
     rules_source {
       rules_source_list {
         generated_rules_type = "ALLOWLIST"
@@ -66,11 +70,14 @@ resource "aws_networkfirewall_firewall_policy" "main" {
     stateless_default_actions          = ["aws:forward_to_sfe"]
     stateless_fragment_default_actions = ["aws:forward_to_sfe"]
 
-    # Domain ALLOWLIST rule group tự xử lý:
-    # - Traffic đến domain trong list → PASS
-    # - Traffic đến domain KHÔNG trong list → DROP (built-in behavior của ALLOWLIST)
+    stateful_default_actions = ["aws:drop_established"]
+    stateful_engine_options {
+      rule_order = "STRICT_ORDER"
+    }
+
     stateful_rule_group_reference {
       resource_arn = aws_networkfirewall_rule_group.egress_allowlist.arn
+      priority     = 1
     }
   }
 
