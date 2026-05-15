@@ -679,3 +679,166 @@ Body: {"question":"Gợi ý món ăn"}
 ⚠️ Tạm chấp nhận: HTTP 500 nếu KB chưa có data
 ❌ Sai  : HTTP 403 = authorizer đang reject đúng key → kiểm tra lại env var VALID_API_KEY
 ```
+
+---
+
+## 9. POST-DEPLOYMENT FIXES (2026-05-15)
+
+### 9.1 Bug: DocumentDB `_id` nested object — `/auth/me` 401 "User not found"
+
+**Triệu chứng:** Login thành công nhưng bị logout ngay lập tức. Console trả về `401 Unauthorized / User not found` ở endpoint `GET /auth/me`.
+
+**Root cause:**  
+Seed script (DMS migration) lưu `_id` dưới dạng **nested object** `{ _id: ObjectId('...') }` thay vì `ObjectId('...')` thẳng. Mongoose `findById()` cast về ObjectId thật và query `{ _id: ObjectId('...') }` → không khớp với document có `_id` kiểu sub-document → `null` → 401. Trong khi đó `findOne({ email })` vẫn hoạt động nên login pass được, JWT được ký với `user_id: { _id: '...' }` (object) thay vì `user_id: ObjectId('...')`.
+
+**Cách phát hiện:**  
+ECS Execute Command → Node.js script diagnostic:
+```bash
+aws ecs execute-command --cluster foodiedash-cluster --task <taskId> \
+  --container foodiedash-be --interactive --command "sh -c 'node -e \"...\"'"
+# console.log(admin._id.constructor.name) → in ra "Object" thay vì "ObjectId"
+```
+
+**Fix (chạy qua ECS Exec — không thay đổi code):**  
+Script Node.js (base64-encode để tránh shell escaping):
+```javascript
+// Với MỖI user bị lỗi:
+// 1. Lưu document hiện tại (trừ _id)
+// 2. Xóa document cũ
+// 3. Reinsert không có _id → MongoDB tự sinh ObjectId hợp lệ
+const bad = await UserModel.findOne({ email });
+const data = bad.toObject();
+delete data._id;
+await UserModel.deleteOne({ email });
+await UserModel.create(data);
+```
+
+**Kết quả:** 122/126 users bị ảnh hưởng → đã fix toàn bộ bằng batch script.
+
+**Tài khoản test sau fix:**
+
+| Email | Password | Role |
+|---|---|---|
+| admin@foodiedash.vn | Admin@123 | ADMIN |
+| staff@foodiedash.vn | Staff@123 | STAFF |
+| customer01@gmail.com | Customer@123 | CUSTOMER |
+| tunita2003@gmail.com | @Password123 | CUSTOMER |
+
+---
+
+### 9.2 Bug: Socket.io CORS Error — Support Chat không kết nối được
+
+**Triệu chứng:**  
+Console browser: `Access to XMLHttpRequest... blocked by CORS policy` tại URL:
+```
+https://0qkzha0e29.execute-api.us-west-2.amazonaws.com/socket.io/?EIO=4&transport=polling
+```
+
+**Root cause:**  
+Frontend `getSocketBaseUrl()` strip suffix `/api` khỏi `VITE_BASE_API`:
+```typescript
+// VITE_BASE_API = "https://0qkzha0e29.execute-api.us-west-2.amazonaws.com/api"
+return apiUrl.endsWith("/api") ? apiUrl.slice(0, -4) : apiUrl;
+// → Socket.io gọi đến /socket.io/... không có route trong API Gateway → 403 không có CORS header
+```
+
+**Fix:** Thêm 2 routes vào API Gateway `0qkzha0e29` trỏ về ALB integration `o366st8` (không cần thay đổi code FE/BE):
+```bash
+aws apigatewayv2 create-route --api-id 0qkzha0e29 \
+  --route-key "ANY /socket.io"          --target "integrations/o366st8"
+# → RouteId: cg94wot
+
+aws apigatewayv2 create-route --api-id 0qkzha0e29 \
+  --route-key "ANY /socket.io/{proxy+}" --target "integrations/o366st8"
+# → RouteId: qfs0kce
+```
+
+Stage `$default` có `AutoDeploy: true` → live ngay không cần redeploy.
+
+**Verify:**
+```bash
+curl -si "https://0qkzha0e29.execute-api.us-west-2.amazonaws.com/socket.io/?EIO=4&transport=polling" \
+  -H "Origin: https://dywbriqynkljb.cloudfront.net"
+# HTTP/1.1 200 OK
+# access-control-allow-origin: https://dywbriqynkljb.cloudfront.net  ✅
+# 0{"sid":"...","upgrades":["websocket"],...}                         ✅
+```
+
+---
+
+### 9.3 Bug: AI Chatbot trả về "Sorry, I am unable to assist" với lời chào
+
+**Triệu chứng:** User chat `hi`, `hello`, `cảm ơn`, ... → AI trả về *"Sorry, I am unable to assist you with this request."*
+
+**Root cause:**  
+Lambda `ai_handler` gọi thẳng Bedrock Knowledge Base (`RetrieveAndGenerateCommand`) cho mọi input. KB chỉ chứa tài liệu về thực phẩm/dinh dưỡng → lời chào không match bất kỳ document nào → Bedrock dùng fallback mặc định.
+
+**Fix:** Thêm **greeting/small-talk detection** ở đầu Lambda — xử lý local, **không gọi Bedrock**:
+
+File thay đổi: `terraform/lambda/ai_handler/index.js`
+
+```javascript
+const GREETING_RE = /^(hi+|he+y+|hello+|howdy|chào|xin\s*chào|alo+|...)\s*[!?.]*$/i;
+const THANKS_RE   = /^(thanks?|thank\s*you|cảm\s*ơn|ok+|được\s*rồi|...)\s*[!?.]*$/i;
+const HOWRU_RE    = /^(how\s*are\s*you|bạn\s*kh[oỏ]e\s*không|...)\s*[!?.]*$/i;
+
+const getSmallTalkReply = (text) => {
+  if (GREETING_RE.test(text.trim())) return GREETING_REPLY;
+  if (THANKS_RE.test(text.trim()))   return THANKS_REPLY;
+  if (HOWRU_RE.test(text.trim()))    return HOWRU_REPLY;
+  if (text.trim().length <= 3)       return GREETING_REPLY; // "hu", "ok", ...
+  return null; // → gọi Bedrock KB bình thường
+};
+```
+
+**Deploy:**
+```bash
+# Repackage
+Compress-Archive -Path index.js -DestinationPath ../ai_handler_new.zip -Force
+# Upload lên Lambda
+aws lambda update-function-code \
+  --function-name foodiedash-ai-handler \
+  --zip-file fileb://ai_handler_new.zip
+aws lambda wait function-updated --function-name foodiedash-ai-handler
+```
+
+**Kết quả test:**
+
+| Input | Trước fix | Sau fix |
+|---|---|---|
+| `hi` | ❌ "Sorry, I am unable to assist..." | ✅ "Xin chào! 👋 Tôi là trợ lý AI dinh dưỡng..." |
+| `cảm ơn` | ❌ "Sorry, I am unable to assist..." | ✅ "Không có gì! 😊 Nếu bạn cần tư vấn thêm..." |
+| `how are you` | ❌ "Sorry, I am unable to assist..." | ✅ "Cảm ơn bạn hỏi thăm! 😄..." |
+| Câu hỏi về món ăn | ✅ hoạt động | ✅ vẫn hoạt động bình thường |
+
+---
+
+### 9.4 API Gateway Routes Summary (sau tất cả fixes)
+
+| Route Key | Integration | Mục đích |
+|---|---|---|
+| `ANY /api/{proxy+}` | `o366st8` (ALB) | Toàn bộ Express API |
+| `POST /api/ai/ask` | `n63npsn` (Lambda) | Bedrock AI chatbot (có authorizer) |
+| `ANY /socket.io` | `o366st8` (ALB) | Socket.io base — **mới thêm** |
+| `ANY /socket.io/{proxy+}` | `o366st8` (ALB) | Socket.io proxy — **mới thêm** |
+
+---
+
+## 10. CHECKLIST CẬP NHẬT (2026-05-15)
+
+- [x] MH1 VPC Flow Logs — ACTIVE ✅
+- [x] MH2 Network Firewall — deployed, egress allowlist active ✅
+- [x] MH3 EFS + Backup COMPLETED + Restore COMPLETED ✅
+- [x] MH4 Lambda Authorizer — 401/403/200 verified ✅
+- [x] MH5 Provisioned Concurrency — 1 unit on alias `live` ✅
+- [x] Docker image → ECR ✅
+- [x] FE → S3 → CloudFront ✅
+- [x] ECS running 1/1 ✅
+- [x] Bedrock KB `LJI4OC7YY6` wired vào Lambda ✅
+- [x] DMS migration: 16/17 collections Atlas → DocumentDB ✅
+- [x] MONGODB_URI fixed (thêm `/foa` + `authMechanism=SCRAM-SHA-1`) ✅
+- [x] **DocumentDB `_id` bug fixed — tất cả 122 users đã reinsert với ObjectId hợp lệ** ✅
+- [x] **Socket.io CORS fixed — thêm routes `/socket.io` và `/socket.io/{proxy+}` vào API Gateway** ✅
+- [x] **AI chatbot greeting handling — Lambda updated, `hi`/`cảm ơn`/... trả lời thân thiện** ✅
+- [x] Support Chat (Socket.io live) kết nối thành công ✅
+- [x] AI Chatbot (Bedrock KB) hoạt động đầy đủ ✅
