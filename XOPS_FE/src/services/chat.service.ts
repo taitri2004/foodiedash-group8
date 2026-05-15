@@ -16,6 +16,10 @@ export const sendChatMessage = async (message: string, history: ChatMessage[]) =
 export const sendBedrockMessage = async (message: string): Promise<string> => {
   const response = await apiClient.post('/ai/ask', {
     question: message,
+  }, {
+    headers: {
+      'x-api-key': import.meta.env.VITE_API_KEY,
+    },
   });
   return response.data.answer;
 };

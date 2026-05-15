@@ -16,7 +16,7 @@ resource "aws_apigatewayv2_api" "main" {
   cors_configuration {
     allow_origins     = ["https://${var.cloudfront_domain}"]
     allow_methods     = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
-    allow_headers     = ["Content-Type", "Authorization", "X-Requested-With", "Accept"]
+    allow_headers     = ["Content-Type", "Authorization", "X-Requested-With", "Accept", "x-api-key"]
     allow_credentials = true
     max_age           = 300
   }
