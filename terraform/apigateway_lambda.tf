@@ -39,6 +39,20 @@ resource "aws_apigatewayv2_route" "proxy" {
   target    = "integrations/${aws_apigatewayv2_integration.alb.id}"
 }
 
+# Socket.io routes — needed because frontend strips /api from base URL
+# getSocketBaseUrl() → https://<apigw>/socket.io/... (no /api prefix)
+resource "aws_apigatewayv2_route" "socketio" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "ANY /socket.io"
+  target    = "integrations/${aws_apigatewayv2_integration.alb.id}"
+}
+
+resource "aws_apigatewayv2_route" "socketio_proxy" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "ANY /socket.io/{proxy+}"
+  target    = "integrations/${aws_apigatewayv2_integration.alb.id}"
+}
+
 resource "aws_apigatewayv2_stage" "default" {
   api_id      = aws_apigatewayv2_api.main.id
   name        = "$default"
